@@ -237,6 +237,26 @@ won't accept `localhost`. `bin/taxisnet-local-domain.sh` (see its own header com
 and why) points the real registered domain at your own machine for local testing, with TLS
 and DNS handled for you.
 
+Set your `.env` to the pilot credentials registered for that domain, and tell the package
+the redirect_uri should resolve locally:
+
+```env
+TAXISNET_OAUTH_REDIRECT_URI_RESOLVES_LOCALLY=true
+TAXISNET_OAUTH_PILOT_CLIENT_ID=<client id>
+TAXISNET_OAUTH_PILOT_CLIENT_SECRET=<client secret>
+TAXISNET_OAUTH_REDIRECT_URI=https://registered.domain.gr/taxisnet_authorize
+```
+
+Then, with your Laravel dev server running (`php artisan serve`), point the registered
+domain at it:
+
+```bash
+vendor/sonole/laravel-gov-gr/bin/taxisnet-local-domain.sh registered.domain.gr
+```
+
+log in through `taxisnet-oauth.redirect` as normal and GSIS redirects back to the registered domain, which
+now resolves to your machine.
+
 ### Actually using it: implement the two contracts
 
 The package never touches your `User` model or session on its own. `handleCallback()` just

@@ -12,14 +12,15 @@ use Throwable;
 final class Failures
 {
     /**
-     * Transport and server (5xx) errors become GovUnavailableException; a credentials error already is one.
-     * Everything else (a business rejection, an InvalidArgumentException) is returned unchanged.
+     * Transport errors and any HTTP error status (a 403 from an IP that is not whitelisted, a 5xx) become
+     * GovUnavailableException; a credentials error already is one. A business rejection ("no such AFM") comes
+     * back as HTTP 200 with an errorRecord, so it is returned unchanged, like an InvalidArgumentException.
      */
     public static function sort(Throwable $e): Throwable
     {
         return match (true) {
             $e instanceof GovUnavailableException => $e,
-            $e instanceof GovApiException && ($e->httpStatusCode() ?? 0) >= 500 => GovUnavailableException::wrapping($e),
+            $e instanceof GovApiException && ($e->httpStatusCode() ?? 0) >= 400 => GovUnavailableException::wrapping($e),
             $e instanceof HttpClientException => new GovUnavailableException($e->getMessage(), 0, $e),
             default => $e,
         };

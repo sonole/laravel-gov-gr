@@ -103,6 +103,27 @@ class ValidationTest extends TestCase
         }
     }
 
+    public function test_a_forbidden_response_is_unavailable_not_not_found(): void
+    {
+        // What ΚΕΔ answers an IP that is not whitelisted.
+        Http::fake(['*' => Http::response('403 Forbidden You are not authorized to access the requested resource.', 403)]);
+
+        foreach ([
+            fn () => Amka::amka2data(self::VALID_AMKA),
+            fn () => Amka::data2amka('Α', 'Β', birthDate: '01/01/1990'),
+            fn () => Amka::confirmRelAmka(self::VALID_AMKA, parentAmka: self::VALID_AMKA),
+            fn () => TaxRegistry::retrieveInfoByAFM(self::VALID_AFM),
+        ] as $call) {
+            try {
+                $call();
+                $this->fail('Expected GovUnavailableException.');
+            } catch (GovUnavailableException $e) {
+                $this->assertNotInstanceOf(GovNotFoundException::class, $e);
+                $this->assertSame(403, $e->httpStatusCode());
+            }
+        }
+    }
+
     public function test_a_connection_failure_is_unavailable(): void
     {
         Http::fake(fn () => throw new ConnectionException('timeout'));

@@ -4,7 +4,11 @@ namespace Sonole\GovGr\Ergani;
 
 use Sonole\GovGr\Core\Enums\GovService;
 use Sonole\GovGr\Core\Services\AuditedSoapService;
+use Sonole\GovGr\Core\Support\Normalize;
 use Sonole\GovGr\Core\Support\XmlHelper;
+use Sonole\GovGr\Ergani\Data\EmploymentHistoryEntry;
+use Sonole\GovGr\Ergani\Data\EmploymentRelation;
+use Sonole\GovGr\Ergani\Data\EmploymentStatus;
 use Illuminate\Http\Request;
 use Throwable;
 
@@ -31,78 +35,71 @@ class Ergani extends AuditedSoapService
     }
 
     /**
-     * getEmployeeRelation - the employee's current employment relationship for $afm, if any.
-     *
-     * Example:
-     * ['result' => ['current' => [
-     *     'employerTaxNumber' => '099028220',
-     *     'employerName' => 'ΑΚΑΔΗΜΑΙΚΟ ΔΙΑΔΙΚΤΥΟ',
-     *     'employeeTaxNumber' => '161182011',
-     *     'employeeSalary' => '2600.00',
-     *     'employeeHourSalary' => '15.60',
-     *     'employeeWeekHours' => '40.0',
-     * ]]]
-     *
-     * @return array{result: array<string, mixed>, audit_record: array<string, mixed>}
+     * getEmployeeRelation - the employee's current job for $afm: employer, monthly salary, hourly wage and
+     * weekly hours. Null when the service answers without a current record. The record as returned is on ->raw.
      *
      * @throws Throwable
      */
-    public function employeeRelation(string $afm, ?Request $request = null): array
+    public function employeeRelation(string $afm, ?Request $request = null): ?EmploymentRelation
     {
-        $body = XmlHelper::tag('afm', $afm);
+        $response = $this->lookup('getEmployeeRelation', XmlHelper::tag('afm', $afm), $request);
+        $record = $this->first($response['result'], 'current');
 
-        return $this->lookup('getEmployeeRelation', $body, $request);
+        return $record === null ? null : EmploymentRelation::fromRecord($record, $response['audit_record']);
     }
 
     /**
-     * getEmploymentRelationship - the type and status of employment for $afm as of $refdate.
-     *
-     * Example:
-     * ['result' => ['sev' => ['kind' => '1', 'typos' => '0']]]
-     *
-     * kind (Σχέση Απασχόλησης): -1 unknown, 0 indefinite, 1 fixed-term, 2 fixed-term project.
-     * typos (Καθεστώς Απασχόλησης): -1 unknown, 0 full-time, 1 part-time, 2 rotating/shift.
-     *
-     * @return array{result: array<string, mixed>, audit_record: array<string, mixed>}
+     * getEmploymentRelationship - the kind (indefinite, fixed-term, project) and type (full-time, part-time,
+     * rotating) of employment for $afm as of $refdate (DD/MM/YYYY). Either is null when the service sent a code
+     * outside the documented ones; the sev record as returned is on ->raw.
      *
      * @throws Throwable
      */
-    public function employmentRelationship(string $afm, string $refdate, ?Request $request = null): array
+    public function employmentRelationship(string $afm, string $refdate, ?Request $request = null): EmploymentStatus
     {
         $body = XmlHelper::tag('refdate', $refdate).XmlHelper::tag('afm', $afm);
+        $response = $this->lookup('getEmploymentRelationship', $body, $request);
 
-        return $this->lookup('getEmploymentRelationship', $body, $request);
+        return EmploymentStatus::fromRecord($this->first($response['result'], 'sev') ?? [], $response['audit_record']);
     }
 
     /**
-     * getEmploymentHistoryByPeriod - employment history entries for $afm between $refdateFrom and $refdateTo.
+     * getEmploymentHistoryByPeriod - every period of employment of $afm between $refdateFrom and $refdateTo
+     * (DD/MM/YYYY): employer, workplace, occupation, pay, hours and dates. Every item shares the call's
+     * ->auditRecord.
      *
-     * Example:
-     * ['result' => ['hist' => [[
-     *     'merTaxId' => '802660454', 'merName' => 'WOW BURGERS HELLAS ΙΔΙΩΤΙΚΗ ΚΕΦΑΛΑΙΟΥΧΙΚΗ ΕΤΑΙΡΕΙΑ',
-     *     'aaMain' => '0', 'stakodMainCode' => '5611', 'stakodMainDescr' => 'Δραστηριότητες εστιατορίων',
-     *     'addressMain' => 'ΠΛΑΤΕΙΑ ΕΛΕΥΘΕΡΩΤΩΝ', 'addressArithmosMain' => '11', 'tkMain' => '15232',
-     *     'kalDhmoiMainCode' => '9178', 'kalDhmoiMainDescr' => 'ΧΑΛΑΝΔΡΙΟΥ',
-     *     'nomMorfMainCode' => '007', 'nomMorfMainDescr' => 'ΙΔΙΩΤΙΚΗ ΚΕΦΑΛΑΙΟΥΧΙΚΗ ΕΤΑΙΡΕΙΑ (ΙΚΕ)',
-     *     'aaMpa' => '0', 'stakodMpaCode' => '5611', 'stakodMpaDescr' => 'Δραστηριότητες εστιατορίων',
-     *     'addressMpa' => 'ΠΛΑΤΕΙΑ ΕΛΕΥΘΕΡΩΤΩΝ', 'addressArithmosMpa' => '11', 'tkMpa' => '15232',
-     *     'kalDhmoiMpaCode' => '9178', 'kalDhmoiMpaDescr' => 'ΧΑΛΑΝΔΡΙΟΥ',
-     *     'step3Code' => '514', 'step3Descr' => 'ΜΑΓΕΙΡΟΙ', 'step2Code' => '51',
-     *     'step2Descr' => 'ΑΠΑΣΧΟΛΟΥΜΕΝΟΙ ΣΤΗΝ ΠΑΡΟΧΗ ΠΡΟΣΩΠΙΚΩΝ ΥΠΗΡΕΣΙΩΝ',
-     *     'step4Code' => '5140', 'step4Descr' => 'ΜΑΓΕΙΡΟΙ', 'step6Code' => '514002', 'step6Descr' => 'ΜΑΓΕΙΡΟΙ, ΓΕΝΙΚΑ',
-     *     'kathestws' => '0', 'apodoxes' => '880.00', 'weekHours' => '40.0',
-     *     'dateFrom' => '2025-11-24T00:00:00+02:00', 'dateTo' => '2025-11-27T17:12:00.85+02:00',
-     * ]]]]
-     *
-     * @return array{result: array<string, mixed>, audit_record: array<string, mixed>}
+     * @return list<EmploymentHistoryEntry>
      *
      * @throws Throwable
      */
     public function employmentHistoryByPeriod(string $afm, string $refdateFrom, string $refdateTo, ?Request $request = null): array
     {
         $body = XmlHelper::tag('afm', $afm).XmlHelper::tag('refdateFrom', $refdateFrom).XmlHelper::tag('refdateTo', $refdateTo);
+        $response = $this->lookup('getEmploymentHistoryByPeriod', $body, $request);
+        $entries = [];
 
-        return $this->lookup('getEmploymentHistoryByPeriod', $body, $request);
+        foreach (Normalize::list($response['result']) as $doc) {
+            foreach (Normalize::list($doc['hist'] ?? null) as $hist) {
+                $entries[] = EmploymentHistoryEntry::fromRecord($hist, $response['audit_record']);
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * The $key record of the first doc. The spec calls doc "a list of records (usually one)", so a single doc
+     * comes as the record itself and several as a list.
+     *
+     * @param  array<string, mixed>  $doc
+     * @return array<string, mixed>|null
+     */
+    private function first(array $doc, string $key): ?array
+    {
+        $docs = Normalize::list($doc);
+        $record = Normalize::list($docs[0][$key] ?? null);
+
+        return $record[0] ?? null;
     }
 
     /**

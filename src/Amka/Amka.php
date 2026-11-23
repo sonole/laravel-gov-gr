@@ -157,27 +157,33 @@ class Amka
     }
 
     /**
-     * Like amka2data(), plus the ΠΑΑΥΠΑ status indication. The raw response, unmapped.
+     * Like amka2data(), plus the ΠΑΑΥΠΑ indication on ->status: whether this is a regular active AMKA or a
+     * temporary / cancelled kind of number.
      *
-     * @return array{result: array<string, mixed>, audit_record: array<string, mixed>}
-     *
-     * @throws Throwable
+     * @throws \InvalidArgumentException for an invalid AMKA
+     * @throws GovNotFoundException when the AMKA is unknown
+     * @throws GovUnavailableException credentials, transport or a server error
      */
-    public function amka2dataE(string $amka, ?Request $request = null): array
+    public function amka2dataE(string $amka, ?Request $request = null): AmkaPerson
     {
-        return $this->info->amka2dataE($amka, $request);
+        ValidAmka::ensure($amka);
+
+        return $this->person(fn () => $this->info->amka2dataE($amka, $request), 'amka2dataEOutputRecord', "AMKA [$amka]", true);
     }
 
     /**
-     * A lighter field set than amka2dataE(), with the same status indication. The raw response, unmapped.
+     * A lighter field set than amka2dataE(), with the same ->status: names, gender, birth date, nationality,
+     * address and first phone. No ID type, birth place, country codes or last-update date.
      *
-     * @return array{result: array<string, mixed>, audit_record: array<string, mixed>}
-     *
-     * @throws Throwable
+     * @throws \InvalidArgumentException for an invalid AMKA
+     * @throws GovNotFoundException when the AMKA is unknown
+     * @throws GovUnavailableException credentials, transport or a server error
      */
-    public function amka2dataLE(string $amka, ?Request $request = null): array
+    public function amka2dataLE(string $amka, ?Request $request = null): AmkaPerson
     {
-        return $this->info->amka2dataLE($amka, $request);
+        ValidAmka::ensure($amka);
+
+        return $this->person(fn () => $this->info->amka2dataLE($amka, $request), 'amka2dataLEOutputRecord', "AMKA [$amka]", true);
     }
 
     /**
@@ -186,7 +192,7 @@ class Amka
      * @throws GovNotFoundException
      * @throws GovApiException
      */
-    private function person(\Closure $request, string $recordKey, string $what): AmkaPerson
+    private function person(\Closure $request, string $recordKey, string $what, bool $withStatus = false): AmkaPerson
     {
         try {
             $response = $request();
@@ -194,7 +200,7 @@ class Amka
             throw Failures::sortRejection($e);
         }
 
-        return AmkaPerson::fromRecord((array) ($response['result'][$recordKey] ?? []), $response['audit_record'])
+        return AmkaPerson::fromRecord((array) ($response['result'][$recordKey] ?? []), $response['audit_record'], $withStatus)
             ?? throw new GovNotFoundException("No person found for $what.");
     }
 }

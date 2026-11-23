@@ -105,13 +105,19 @@ See `config/govgr.php` for every service's exact env var names, they follow the 
 ```php
 use Gemi;
 
-Gemi::validate($afm);
-Gemi::getGemiNumbers($afm);
-Gemi::getGemiNumber($afm);
-Gemi::companyBoard($afm);
-Gemi::basicInfo($afm);
-Gemi::balanceSheets($afm);
+Gemi::validate($afm);        // the raw checkAfmExists answer (no spec for a typed one)
+Gemi::getGemiNumbers($afm);  // string[]
+Gemi::getGemiNumber($afm);   // ?string
+
+$company = Gemi::basicInfo($afm);   // Company: ->name, ->legalTypeDescr, ->statusDescr, ->address, ->branchType,
+                                    // ->applications[], ->activities[], ->capital, ->stocks[], ->isDeleted(), ->raw
+$board = Gemi::companyBoard($afm);  // CompanyBoard: ->members[] (natural persons), ->entities[] (legal persons),
+                                    // ->activeMembers(), ->representatives()
+$sheets = Gemi::balanceSheets($afm); // BalanceSheet[]: ->year, ->netTurnover, ->totalAssets, ->isXbrl, ->files[]
 ```
+
+Every object keeps the service's record on `->raw` and the `audit_records` row on `->auditRecord`. Board
+members' home address, birth date and identity document are real personal data; handle them with care.
 
 ### Amka
 
@@ -120,12 +126,19 @@ use Amka;
 
 $c = Amka::confirmRelAmka($relAmka, parentAmka: $parentAmka); // RelationshipConfirmation: ->confirmed, ->info, ->raw
 $all = Amka::confirmRelAmkaMultiple([$a, $b], parentAmka: $parentAmka); // a list of them, one per AMKA
-$person = Amka::amka2data($amka);   // AmkaPerson (->gender, ->idType, ->birthDate, ...)
+$person = Amka::amka2data($amka);   // AmkaPerson: every documented field (->gender, ->idType, ->birthDate,
+                                     // ->surnameLatin, ->birthMunicipality, ->address, ->isDeceased, ...)
 $person->raw;                        // the service's record as returned
 $person->auditRecord;                // the audit_records row of the call
 
-// The current AMKA of someone, from their details (an AmkaPerson without gender / ID type):
+// The current AMKA of someone, from their details. The same AmkaPerson, minus what data2amka doesn't
+// answer: gender, ID type, birth place, address and phones stay null.
 $amka = Amka::data2amka(surname: $surname, firstName: $firstName, birthDate: '01/02/1990')->amka;
+
+// The same person with the ΠΑΑΥΠΑ indication: ->status is AmkaStatus::Active for a regular AMKA, or one of the
+// temporary / cancelled kinds (->status->isCancelled(), ->isVaccinationOnly()). amka2dataLE is the lighter field set.
+$person = Amka::amka2dataE($amka);
+$person = Amka::amka2dataLE($amka);
 // Both throw GovNotFoundException when nobody matches.
 ```
 
@@ -134,10 +147,16 @@ $amka = Amka::data2amka(surname: $surname, firstName: $firstName, birthDate: '01
 ```php
 use Ergani;
 
-Ergani::employeeRelation($afm);
-Ergani::employmentRelationship($afm, $refdate);
-Ergani::employmentHistoryByPeriod($afm, $refdateFrom, $refdateTo);
+$job = Ergani::employeeRelation($afm);  // ?EmploymentRelation: ->employerAfm, ->employerName, ->monthlySalary,
+                                        // ->hourlyWage, ->weeklyHours; null when there is no current job
+$status = Ergani::employmentRelationship($afm, '03/12/2020'); // EmploymentStatus: ->kind (EmploymentKind::Indefinite,
+                                        // FixedTerm, Project) and ->type (EmploymentType::FullTime, PartTime, Rotating)
+$history = Ergani::employmentHistoryByPeriod($afm, '01/01/2024', '31/12/2024'); // EmploymentHistoryEntry[]:
+                                        // ->employerName, ->headquarters, ->workplace, ->occupationDescr, ->salary, ->from, ->to
 ```
+
+Dates are sent as DD/MM/YYYY, as the service wants them. Every object keeps the service's record on `->raw`
+and the `audit_records` row on `->auditRecord`.
 
 ### TaxRegistry
 
@@ -152,8 +171,9 @@ TaxRegistry::lookupByAfm($afm); // the public RgWsPublic2 lookup, separate crede
 
 ### Errors and validation
 
-The calls that return an object (`amka2data`, `data2amka`, `confirmRelAmka`, `confirmRelAmkaMultiple`,
-`retrieveInfoByAFM`) end in one of three ways besides success, so callers only catch these:
+The Amka and TaxRegistry calls that return an object (`amka2data`, `data2amka`, `amka2dataE`, `amka2dataLE`,
+`confirmRelAmka`, `confirmRelAmkaMultiple`, `retrieveInfoByAFM`) end in one of three ways besides success, so
+callers only catch these:
 
 | Exception | Meaning |
 | --- | --- |
@@ -164,6 +184,9 @@ The calls that return an object (`amka2data`, `data2amka`, `confirmRelAmka`, `co
 AFM and AMKA arguments are checked, checksum included, **before** anything is sent, so a typo costs neither a ΚΕΔ
 request nor an audit row. A bad one throws `InvalidArgumentException`. Set `GOVGR_VALIDATE_INPUT=false` if your test
 environment uses dummy numbers that the service accepts but the checksum does not.
+
+The Gemi and Ergani objects keep those services' existing exceptions: a ΚΕΔ or business error (for instance Gemi's
+"Δεν βρέθηκε επιχείρηση") throws `GovServiceException`, and bad credentials `GovAuthenticationException`.
 
 The same checks are Laravel validation rules, so a form can reject a value before the call is ever made:
 
@@ -177,30 +200,40 @@ ValidAfm::passes($afm); // or the plain boolean check
 
 ### Faking (local development and tests)
 
-`Amka::fake()` and `TaxRegistry::fake()` replace the service with one that never calls the network, needs no
-credentials and writes no `audit_records` row. The methods and the returned `AmkaPerson` / `RegistryEntity`
-stay the same, so the code under test doesn't change.
+Every ΚΕΔ facade has a `fake()` that replaces the service with one that never calls the network, needs no
+credentials and writes no `audit_records` row. The methods and the returned objects stay the same, so the code
+under test doesn't change.
 
 ```php
 TaxRegistry::fake();   // an AFM starting 09, 8 or 9 is a legal entity, any other a natural person built from the AFM
 Amka::fake();          // data2amka() builds a valid AMKA from the details, amka2data() derives the person from it
+Gemi::fake();          // any 9-digit AFM is a registered ΙΚΕ with a GEMI number, a board and two balance sheets
+Ergani::fake();        // any 9-digit AFM has a full-time, indefinite job with an employer derived from the AFM
+BankConfirm::fake();   // every IBAN / AFM pair is confirmed
 
-// Override single answers: an entity / person, a record array, or an exception to throw.
+// Override single answers: an object, the service's record array, or an exception to throw.
 TaxRegistry::fake(['123456789' => new GovNotFoundException('Ανύπαρκτος Α.Φ.Μ.')]);
 Amka::fake(amka2data: ['01019000015' => $person], data2amka: ['000000001' => $person], confirmations: ['02029039233' => false]);
+Gemi::fake(companies: ['123456789' => $company], boards: [...], balanceSheets: [...]);
+Ergani::fake(relations: ['123456789' => null /* no current job */], statuses: [...], history: [...]);
+BankConfirm::fake(['GR16...' => false]);
 ```
 
-Set `GOVGR_FAKE=true` (config `govgr.fake`) to install both fakes at boot. It is refused in production. To fake
-only locally, point the config at your environment: `'fake' => env('GOVGR_FAKE', env('APP_ENV') === 'local')`. `confirmRelAmka()` confirms every relAmka as "ΤΕΚΝΟ" unless `confirmations` says otherwise. The other methods
-(`amka2dataE`, `lookupByAfm`, ...) are not faked and throw `BadMethodCallException`.
+Set `GOVGR_FAKE=true` (config `govgr.fake`) to install all five fakes at boot. It is refused in production. To fake
+only locally, point the config at your environment: `'fake' => env('GOVGR_FAKE', env('APP_ENV') === 'local')`. `confirmRelAmka()` confirms every relAmka as "ΤΕΚΝΟ" unless `confirmations` says otherwise, and `amka2dataE()` /
+`amka2dataLE()` give the `amka2data()` person as an active AMKA. TaxRegistry's other methods (`lookupByAfm`, ...)
+are not faked and throw `BadMethodCallException`.
 
 ### BankConfirm
 
 ```php
 use BankConfirm;
 
-BankConfirm::confirmAccount($iban, $afm);
+BankConfirm::confirmAccount($iban, $afm); // the raw answer: ['result' => ['bank' => ..., 'confirmed' => 'true'], ...]
 ```
+
+There is no typed result here: `docs/` has no specification for this service, so the shape is only known from
+calls.
 
 Every facade's exact method signatures are in its `Facades\*` class docblock, e.g.
 `src/Gemi/Facades/Gemi.php`.

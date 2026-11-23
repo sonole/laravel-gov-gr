@@ -144,14 +144,21 @@ class FakeAmka extends Amka
         return array_map(fn (string $relAmka) => $this->confirmation($relAmka), array_values($relAmkas));
     }
 
-    public function amka2dataE(string $amka, ?Request $request = null): array
+    /** The amka2data() answer, as an active AMKA (->status). */
+    public function amka2dataE(string $amka, ?Request $request = null): AmkaPerson
     {
-        throw $this->notFaked(__FUNCTION__);
+        return $this->withStatus($this->amka2data($amka, $request));
     }
 
-    public function amka2dataLE(string $amka, ?Request $request = null): array
+    /** The amka2data() answer, as an active AMKA (->status). */
+    public function amka2dataLE(string $amka, ?Request $request = null): AmkaPerson
     {
-        throw $this->notFaked(__FUNCTION__);
+        return $this->withStatus($this->amka2data($amka, $request));
+    }
+
+    private function withStatus(AmkaPerson $person): AmkaPerson
+    {
+        return $person->status !== null ? $person : (AmkaPerson::fromRecord($person->raw, $person->auditRecord, true) ?? $person);
     }
 
     private function confirmation(string $relAmka): RelationshipConfirmation

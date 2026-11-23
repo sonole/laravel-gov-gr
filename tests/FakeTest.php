@@ -8,6 +8,14 @@ use InvalidArgumentException;
 use RuntimeException;
 use Sonole\GovGr\Amka\Data\AmkaPerson;
 use Sonole\GovGr\Amka\Facades\Amka;
+use Sonole\GovGr\BankConfirm\Facades\BankConfirm;
+use Sonole\GovGr\Ergani\Data\EmploymentKind;
+use Sonole\GovGr\Ergani\Data\EmploymentRelation;
+use Sonole\GovGr\Ergani\Data\EmploymentType;
+use Sonole\GovGr\Ergani\Facades\Ergani;
+use Sonole\GovGr\Gemi\Data\Company;
+use Sonole\GovGr\Gemi\Exceptions\AfmNotFoundException;
+use Sonole\GovGr\Gemi\Facades\Gemi;
 use Sonole\GovGr\Core\Enums\Gender;
 use Sonole\GovGr\Core\Exceptions\GovNotFoundException;
 use Sonole\GovGr\Core\Fakes\FakeData;
@@ -154,13 +162,15 @@ class FakeTest extends TestCase
         Amka::amka2data('02029039233');
     }
 
-    public function test_the_other_amka_methods_are_not_faked(): void
+    public function test_amka2data_e_and_le_are_faked_as_an_active_amka(): void
     {
         Amka::fake();
 
-        $this->expectException(BadMethodCallException::class);
+        $person = Amka::amka2dataE('01019000015');
 
-        Amka::amka2dataE('01019000015');
+        $this->assertSame(\Sonole\GovGr\Amka\Data\AmkaStatus::Active, $person->status);
+        $this->assertSame(Amka::amka2data('01019000015')->surname, $person->surname);
+        $this->assertSame(\Sonole\GovGr\Amka\Data\AmkaStatus::Active, Amka::amka2dataLE('01019000015')->status);
     }
 
     public function test_the_config_switch_installs_the_fakes_and_refuses_production(): void
@@ -170,10 +180,136 @@ class FakeTest extends TestCase
 
         $this->assertSame(EntityKind::NaturalPerson, TaxRegistry::retrieveInfoByAFM('123456780')->kind);
         $this->assertTrue(FakeData::isValidAmka(Amka::data2amka('Α', 'Β', birthDate: '01/01/1990')->amka));
+        $this->assertSame('123456780000', Gemi::basicInfo('123456780')->gemiNumber);
+        $this->assertSame(EmploymentKind::Indefinite, Ergani::employmentRelationship('123456780', '01/01/2025')->kind);
+        $this->assertSame('true', BankConfirm::confirmAccount('GR1601101250000000012300695', '123456780')['result']['confirmed']);
+        Http::assertNothingSent();
+        $this->assertSame(0, AuditRecord::count());
 
         $this->app['env'] = 'production';
         $this->expectException(RuntimeException::class);
         (new GovGrServiceProvider($this->app))->boot();
+    }
+
+    public function test_gemi_answers_for_any_nine_digit_afm_without_the_network(): void
+    {
+        Http::fake();
+        Gemi::fake();
+
+        $company = Gemi::basicInfo('123456780');
+        $board = Gemi::companyBoard('123456780');
+        $sheets = Gemi::balanceSheets('123456780');
+
+        $this->assertSame('123456780000', $company->gemiNumber);
+        $this->assertSame('123456780', $company->afm);
+        $this->assertSame('ΙΚΕ', $company->legalTypeDescr);
+        $this->assertFalse($company->isDeleted());
+        $this->assertSame(5000.0, $company->capital?->amount);
+        $this->assertSame(['123456780000'], Gemi::getGemiNumbers('123456780'));
+        $this->assertSame('123456780000', data_get(Gemi::validate('123456780'), 'result.companies.company.gemiNumber'));
+        $this->assertCount(1, $board->representatives());
+        $this->assertSame('ΑΘΗΝΑ', $board->members[0]->address->area);
+        $this->assertCount(2, $sheets);
+        $this->assertTrue($sheets[0]->hasFiles());
+        $this->assertSame('123456780000', $sheets[0]->files[0]->gemiNumber);
+        $this->assertFalse($sheets[1]->hasFiles());
+        $this->assertSame($company->name, Gemi::basicInfo('123456780')->name);
+        Http::assertNothingSent();
+        $this->assertSame(0, AuditRecord::count());
+    }
+
+    public function test_gemi_does_not_know_an_afm_that_is_not_nine_digits(): void
+    {
+        Gemi::fake();
+
+        $this->assertNull(Gemi::getGemiNumber('12345'));
+        $this->assertSame([], Gemi::getGemiNumbers('12345'));
+        $this->assertSame([], Gemi::validate('12345')['result']['companies']);
+
+        $this->expectException(AfmNotFoundException::class);
+        Gemi::basicInfo('12345');
+    }
+
+    public function test_gemi_responses_can_be_overridden_per_afm(): void
+    {
+        $company = Company::fromRecord(['arGemi' => '000000000001', 'businessName' => 'ΔΕΙΓΜΑ ΑΕ']);
+        Gemi::fake(
+            companies: ['111111111' => $company, '222222222' => ['arGemi' => '000000000002', 'businessName' => 'ΑΛΛΗ ΑΕ'], '333333333' => new GovNotFoundException('x')],
+            boards: ['111111111' => ['fp' => [], 'np' => []]],
+            balanceSheets: ['111111111' => [['year' => '2020', 'netTurnover' => '1', 'files' => []]]],
+        );
+
+        $this->assertSame($company, Gemi::basicInfo('111111111'));
+        $this->assertSame('ΑΛΛΗ ΑΕ', Gemi::basicInfo('222222222')->name);
+        $this->assertTrue(Gemi::companyBoard('111111111')->isEmpty());
+        $this->assertSame(1.0, Gemi::balanceSheets('111111111')[0]->netTurnover);
+
+        $this->expectException(GovNotFoundException::class);
+        Gemi::basicInfo('333333333');
+    }
+
+    public function test_ergani_employs_any_nine_digit_afm_full_time_without_the_network(): void
+    {
+        Http::fake();
+        Ergani::fake();
+
+        $job = Ergani::employeeRelation('123456780');
+        $status = Ergani::employmentRelationship('123456780', '01/06/2025');
+        $history = Ergani::employmentHistoryByPeriod('123456780', '01/01/2025', '31/12/2025');
+
+        $this->assertNotNull($job);
+        $this->assertSame('123456780', $job->employeeAfm);
+        $this->assertSame(1500.0, $job->monthlySalary);
+        $this->assertSame($job->employerAfm, Ergani::employeeRelation('123456780')?->employerAfm);
+        $this->assertSame(EmploymentKind::Indefinite, $status->kind);
+        $this->assertSame(EmploymentType::FullTime, $status->type);
+        $this->assertCount(1, $history);
+        $this->assertSame($job->employerName, $history[0]->employerName);
+        $this->assertSame('2025-01-01', $history[0]->from?->format('Y-m-d'));
+        $this->assertSame('2025-12-31', $history[0]->to?->format('Y-m-d'));
+        $this->assertSame('213100', $history[0]->occupationCode);
+        Http::assertNothingSent();
+        $this->assertSame(0, AuditRecord::count());
+    }
+
+    public function test_ergani_knows_no_job_for_an_afm_that_is_not_nine_digits(): void
+    {
+        Ergani::fake();
+
+        $this->assertNull(Ergani::employeeRelation('12345'));
+        $this->assertSame(EmploymentKind::Unknown, Ergani::employmentRelationship('12345', '01/06/2025')->kind);
+        $this->assertSame([], Ergani::employmentHistoryByPeriod('12345', '01/01/2025', '31/12/2025'));
+    }
+
+    public function test_ergani_responses_can_be_overridden_per_afm(): void
+    {
+        $relation = EmploymentRelation::fromRecord(['employerName' => 'ΔΕΙΓΜΑ']);
+        Ergani::fake(
+            relations: ['111111111' => $relation, '222222222' => null, '333333333' => ['employerName' => 'ΑΛΛΗ'], '444444444' => new GovNotFoundException('x')],
+            statuses: ['111111111' => ['kind' => '1', 'typos' => '1']],
+            history: ['111111111' => []],
+        );
+
+        $this->assertSame($relation, Ergani::employeeRelation('111111111'));
+        $this->assertNull(Ergani::employeeRelation('222222222'));
+        $this->assertSame('ΑΛΛΗ', Ergani::employeeRelation('333333333')?->employerName);
+        $this->assertSame(EmploymentType::PartTime, Ergani::employmentRelationship('111111111', '01/01/2025')->type);
+        $this->assertSame([], Ergani::employmentHistoryByPeriod('111111111', '01/01/2025', '31/12/2025'));
+
+        $this->expectException(GovNotFoundException::class);
+        Ergani::employeeRelation('444444444');
+    }
+
+    public function test_bank_confirm_confirms_every_account_unless_told_otherwise(): void
+    {
+        Http::fake();
+        BankConfirm::fake(['GR0000000000000000000000002' => false, 'GR0000000000000000000000003' => ['bank' => 'ΑΛΛΗ', 'confirmed' => 'true']]);
+
+        $this->assertSame('true', BankConfirm::confirmAccount('GR0000000000000000000000001', '123456780')['result']['confirmed']);
+        $this->assertSame('false', BankConfirm::confirmAccount('GR0000000000000000000000002', '123456780')['result']['confirmed']);
+        $this->assertSame('ΑΛΛΗ', BankConfirm::confirmAccount('GR0000000000000000000000003', '123456780')['result']['bank']);
+        Http::assertNothingSent();
+        $this->assertSame(0, AuditRecord::count());
     }
 
     public function test_the_fake_confirms_relationships_unless_told_otherwise(): void

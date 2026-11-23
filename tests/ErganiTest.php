@@ -5,6 +5,8 @@ namespace Sonole\GovGr\Tests;
 use Sonole\GovGr\Core\Exceptions\GovAuthenticationException;
 use Sonole\GovGr\Core\Exceptions\GovServiceException;
 use Sonole\GovGr\Core\Http\Models\AuditRecord;
+use Sonole\GovGr\Ergani\Data\EmploymentKind;
+use Sonole\GovGr\Ergani\Data\EmploymentType;
 use Sonole\GovGr\Ergani\Facades\Ergani;
 use Illuminate\Http\Client\Request as ClientRequest;
 use Illuminate\Support\Facades\Http;
@@ -185,29 +187,45 @@ class ErganiTest extends TestCase
         </soap:Envelope>
         XML;
 
-    public function test_employee_relation_returns_the_doc_contents(): void
+    public function test_employee_relation_maps_the_current_record(): void
     {
         Http::fake(['*' => Http::response(self::EMPLOYEE_RELATION_XML, 200, ['Content-Type' => 'text/xml'])]);
 
-        $result = Ergani::employeeRelation('161182011');
+        $relation = Ergani::employeeRelation('161182011');
 
-        $this->assertSame('ΑΚΑΔΗΜΑΙΚΟ ΔΙΑΔΙΚΤΥΟ', $result['result']['current']['employerName']);
-        $this->assertSame('2600.00', $result['result']['current']['employeeSalary']);
-        $this->assertSame('15.60', $result['result']['current']['employeeHourSalary']);
-        $this->assertSame('40.0', $result['result']['current']['employeeWeekHours']);
+        $this->assertNotNull($relation);
+        $this->assertSame('099028220', $relation->employerAfm);
+        $this->assertSame('ΑΚΑΔΗΜΑΙΚΟ ΔΙΑΔΙΚΤΥΟ', $relation->employerName);
+        $this->assertSame('161182011', $relation->employeeAfm);
+        $this->assertSame(2600.0, $relation->monthlySalary);
+        $this->assertSame(15.6, $relation->hourlyWage);
+        $this->assertSame(40.0, $relation->weeklyHours);
+        $this->assertSame('2600.00', $relation->raw['employeeSalary']);
+        $this->assertNotNull($relation->auditRecord);
 
         Http::assertSent(fn (ClientRequest $r) => str_contains($r->body(), '<afm>161182011</afm>')
             && str_contains($r->body(), '<auditUserId>system@example.com</auditUserId>'));
+    }
+
+    public function test_employee_relation_is_null_without_a_current_record(): void
+    {
+        Http::fake(['*' => Http::response(str_replace(
+            ['<current>', '</current>'], ['<!--', '-->'], self::EMPLOYEE_RELATION_XML,
+        ), 200, ['Content-Type' => 'text/xml'])]);
+
+        $this->assertNull(Ergani::employeeRelation('161182011'));
     }
 
     public function test_employment_relationship_sends_refdate_before_afm(): void
     {
         Http::fake(['*' => Http::response(self::EMPLOYMENT_RELATIONSHIP_XML, 200, ['Content-Type' => 'text/xml'])]);
 
-        $result = Ergani::employmentRelationship('161182011', '03/12/2020');
+        $status = Ergani::employmentRelationship('161182011', '03/12/2020');
 
-        $this->assertSame('1', $result['result']['sev']['kind']);
-        $this->assertSame('0', $result['result']['sev']['typos']);
+        $this->assertSame(EmploymentKind::FixedTerm, $status->kind);
+        $this->assertSame(EmploymentType::FullTime, $status->type);
+        $this->assertSame('1', $status->raw['kind']);
+        $this->assertNotNull($status->auditRecord);
 
         Http::assertSent(function (ClientRequest $r) {
             $refdatePos = strpos($r->body(), '<refdate>03/12/2020</refdate>');
@@ -217,15 +235,44 @@ class ErganiTest extends TestCase
         });
     }
 
-    public function test_employment_history_by_period_normalizes_multiple_hist_entries(): void
+    public function test_employment_relationship_leaves_an_undocumented_code_null(): void
+    {
+        Http::fake(['*' => Http::response(str_replace(
+            ['<kind>1</kind>', '<typos>0</typos>'], ['<kind>7</kind>', '<typos>-1</typos>'], self::EMPLOYMENT_RELATIONSHIP_XML,
+        ), 200, ['Content-Type' => 'text/xml'])]);
+
+        $status = Ergani::employmentRelationship('161182011', '03/12/2020');
+
+        $this->assertNull($status->kind);
+        $this->assertSame(EmploymentType::Unknown, $status->type);
+        $this->assertSame('7', $status->raw['kind']);
+    }
+
+    public function test_employment_history_by_period_maps_every_hist_entry(): void
     {
         Http::fake(['*' => Http::response(self::HISTORY_BY_PERIOD_XML, 200, ['Content-Type' => 'text/xml'])]);
 
-        $result = Ergani::employmentHistoryByPeriod('116627107', '03/12/2024', '01/03/2026');
+        $history = Ergani::employmentHistoryByPeriod('116627107', '03/12/2024', '01/03/2026');
 
-        $this->assertCount(2, $result['result']['hist']);
-        $this->assertSame('Δραστηριότητες εστιατορίων', $result['result']['hist'][0]['stakodMainDescr']);
-        $this->assertSame('880.00', $result['result']['hist'][0]['apodoxes']);
+        $this->assertCount(2, $history);
+        $entry = $history[0];
+        $this->assertSame('Δραστηριότητες εστιατορίων', $entry->headquarters->activityDescr);
+        $this->assertSame('5611', $entry->workplace->activityCode);
+        $this->assertSame('ΠΛΑΤΕΙΑ ΕΛΕΥΘΕΡΩΤΩΝ', $entry->headquarters->address->street);
+        $this->assertSame('11', $entry->headquarters->address->number);
+        $this->assertSame('15232', $entry->workplace->address->zip);
+        $this->assertSame('ΧΑΛΑΝΔΡΙΟΥ', $entry->workplace->address->area);
+        $this->assertSame('9178', $entry->workplace->municipalityCode);
+        $this->assertSame('ΙΔΙΩΤΙΚΗ ΚΕΦΑΛΑΙΟΥΧΙΚΗ ΕΤΑΙΡΕΙΑ (ΙΚΕ)', $entry->legalFormDescr);
+        $this->assertSame('514002', $entry->occupationCode);
+        $this->assertSame('ΜΑΓΕΙΡΟΙ, ΓΕΝΙΚΑ', $entry->occupationDescr);
+        $this->assertSame(EmploymentType::FullTime, $entry->type);
+        $this->assertSame(880.0, $entry->salary);
+        $this->assertSame(40.0, $entry->weeklyHours);
+        $this->assertSame('2025-11-24', $entry->from?->format('Y-m-d'));
+        $this->assertSame('2025-11-27 17:12', $entry->to?->format('Y-m-d H:i'));
+        $this->assertSame('880.00', $entry->raw['apodoxes']);
+        $this->assertSame($history[0]->auditRecord, $history[1]->auditRecord);
 
         Http::assertSent(function (ClientRequest $r) {
             $afmPos = strpos($r->body(), '<afm>116627107</afm>');

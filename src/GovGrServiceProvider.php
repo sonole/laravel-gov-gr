@@ -23,6 +23,9 @@ use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use RuntimeException;
 use Sonole\GovGr\Amka\Facades\Amka as AmkaFacade;
+use Sonole\GovGr\BankConfirm\Facades\BankConfirm as BankConfirmFacade;
+use Sonole\GovGr\Ergani\Facades\Ergani as ErganiFacade;
+use Sonole\GovGr\Gemi\Facades\Gemi as GemiFacade;
 use Sonole\GovGr\TaxRegistry\Facades\TaxRegistry as TaxRegistryFacade;
 
 class GovGrServiceProvider extends ServiceProvider
@@ -69,6 +72,9 @@ class GovGrServiceProvider extends ServiceProvider
 
             TaxRegistryFacade::fake();
             AmkaFacade::fake();
+            GemiFacade::fake();
+            ErganiFacade::fake();
+            BankConfirmFacade::fake();
         }
 
         $this->loadTranslationsFrom(__DIR__ . '/../lang', 'govgr');

@@ -3,8 +3,10 @@
 namespace Sonole\GovGr\Tests;
 
 use Sonole\GovGr\Core\Exceptions\GovAuthenticationException;
+use Sonole\GovGr\Core\Exceptions\GovNotFoundException;
 use Sonole\GovGr\Core\Exceptions\GovServiceException;
 use Sonole\GovGr\Core\Http\Models\AuditRecord;
+use Sonole\GovGr\Gemi\Data\BranchType;
 use Sonole\GovGr\Gemi\Exceptions\AfmNotFoundException;
 use Sonole\GovGr\Gemi\Facades\Gemi;
 use Illuminate\Http\Client\Request as ClientRequest;
@@ -145,9 +147,11 @@ class GemiTest extends TestCase
             ],
         ]);
 
-        $result = Gemi::companyBoard('010540663');
+        $board = Gemi::companyBoard('010540663');
 
-        $this->assertSame('ΤΕΣΤ', $result['result']['board']['fp'][0]['lastname']);
+        $this->assertSame('ΤΕΣΤ', $board->members[0]->surname);
+        $this->assertSame('123456789', $board->members[0]->afm);
+        $this->assertNotNull($board->auditRecord);
 
         Http::assertSent(function (ClientRequest $r) {
             if (! str_contains($r->url(), 'gemiBoardRestService')) {
@@ -164,7 +168,7 @@ class GemiTest extends TestCase
         });
     }
 
-    public function test_board_returns_the_full_fp_record_shape(): void
+    public function test_board_maps_members_and_keeps_the_raw_record(): void
     {
         // Fake/placeholder personal data below (not from a real call). Field names match a real response; values do not.
         $this->fakeValidationThenBoard([
@@ -184,11 +188,65 @@ class GemiTest extends TestCase
             ],
         ]);
 
-        $result = Gemi::companyBoard('010540663')['result'];
+        $board = Gemi::companyBoard('010540663');
+        $member = $board->members[0];
 
-        $this->assertSame('ΠΡΟΕΔΡΟΣ', $result['board']['fp'][0]['relationDescr']);
-        $this->assertSame('ΑΣΤΥΝΟΜΙΚΗ ΤΑΥΤΟΤΗΤΑ', $result['board']['fp'][0]['identityType']);
-        $this->assertSame([], $result['board']['np']);
+        $this->assertSame('ΠΡΟΕΔΡΟΣ', $member->relationDescr);
+        $this->assertSame('ΑΣΤΥΝΟΜΙΚΗ ΤΑΥΤΟΤΗΤΑ', $member->idType);
+        $this->assertSame('ΑΒ000000', $member->idNumber);
+        $this->assertSame('ΓΙΑΝΝΗΣ', $member->firstName);
+        $this->assertSame('ΟΔΟΣ ΔΕΙΓΜΑ', $member->address->street);
+        $this->assertSame('10000', $member->address->zip);
+        $this->assertTrue($member->isActive);
+        $this->assertFalse($member->isRepresentative());
+        $this->assertSame('2020-01-01', $member->electionDate?->format('Y-m-d'));
+        $this->assertSame('2025-01-01', $member->endDate?->format('Y-m-d'));
+        $this->assertSame('BOARD', $member->raw['relationType']);
+        $this->assertSame([], $board->entities);
+        $this->assertSame([$member], $board->activeMembers());
+        $this->assertSame([], $board->representatives());
+        $this->assertFalse($board->isEmpty());
+    }
+
+    public function test_board_maps_legal_persons_and_representatives(): void
+    {
+        $this->fakeValidationThenBoard([
+            'getCompanyBoardV3OutputRecord' => [
+                'board' => [
+                    'fp' => [[
+                        'afm' => '000000000', 'lastname' => 'ΔΕΙΓΜΑ', 'firstname' => 'ΔΕΙΓΜΑ', 'percentage' => '50',
+                        'isRepresentativeAlone' => 'true', 'isRepresentativeInCommon' => 'false', 'activeMember' => 'true',
+                    ]],
+                    'np' => [[
+                        'codeNP' => '1', 'afm' => '000000000', 'arGemi' => '000000000000', 'businessName' => 'ΔΕΙΓΜΑ ΕΠΕ',
+                        'legalTypeId' => '2', 'legalTypeDescr' => 'ΕΠΕ', 'relationDescr' => 'Εταίρος', 'activeMember' => 'true',
+                        'isRepresentativeAlone' => 'false', 'isRepresentativeInCommon' => 'true', 'percentage' => '50',
+                        'street' => 'ΟΔΟΣ', 'streetNumber' => '2', 'zipCode' => '10000', 'city' => 'ΑΘΗΝΑ',
+                    ]],
+                ],
+            ],
+        ]);
+
+        $board = Gemi::companyBoard('010540663');
+
+        $this->assertSame(50.0, $board->members[0]->percentage);
+        $this->assertTrue($board->members[0]->isRepresentativeAlone);
+        $this->assertCount(1, $board->representatives());
+        $this->assertSame('ΔΕΙΓΜΑ ΕΠΕ', $board->entities[0]->name);
+        $this->assertSame('000000000000', $board->entities[0]->gemiNumber);
+        $this->assertTrue($board->entities[0]->isRepresentativeInCommon);
+        $this->assertTrue($board->entities[0]->isRepresentative());
+        $this->assertSame('ΑΘΗΝΑ', $board->entities[0]->address->area);
+    }
+
+    public function test_board_is_empty_when_the_registry_sends_no_lists(): void
+    {
+        $this->fakeValidationThenBoard(['getCompanyBoardV3OutputRecord' => ['board' => []]]);
+
+        $board = Gemi::companyBoard('010540663');
+
+        $this->assertTrue($board->isEmpty());
+        $this->assertSame([], $board->members);
     }
 
     public function test_board_throws_afm_not_found_when_validation_returns_no_companies(): void
@@ -241,41 +299,111 @@ class GemiTest extends TestCase
             'getBasicInfoV3OutputRecord' => ['company' => ['businessName' => 'ΤΕΣΤ ΑΕ']],
         ], 200, ['Content-Type' => 'application/json'])]);
 
-        $result = Gemi::basicInfo('010540663');
+        $company = Gemi::basicInfo('010540663');
 
-        $this->assertSame('ΤΕΣΤ ΑΕ', $result['result']['company']['businessName']);
+        $this->assertSame('ΤΕΣΤ ΑΕ', $company->name);
+        $this->assertNotNull($company->auditRecord);
 
         Http::assertSent(fn (ClientRequest $r) => $r->data()['getBasicInfoV3InputRecord']['afm'] === '010540663'
             && isset($r->data()['auditRecord']['auditProtocol']));
     }
 
-    public function test_basic_info_returns_the_full_company_record_shape(): void
+    public function test_basic_info_throws_not_found_when_the_registry_sends_no_company(): void
+    {
+        Http::fake(['*' => Http::response([
+            'getBasicInfoV3OutputRecord' => [],
+        ], 200, ['Content-Type' => 'application/json'])]);
+
+        $this->expectException(GovNotFoundException::class);
+
+        Gemi::basicInfo('010540663');
+    }
+
+    public function test_basic_info_maps_the_company_record(): void
     {
         // Fake/placeholder company data below (not from a real call). Field names match a real response; values do not.
         Http::fake(['*' => Http::response([
             'getBasicInfoV3OutputRecord' => ['company' => [
                 'arGemi' => '000000000000', 'afm' => '000000000', 'legalTypeId' => '1', 'legalTypeDescr' => 'ΑΕ',
-                'memberStatusId' => '3', 'memberStatusDescr' => 'Ενεργή',
+                'memberStatusId' => '3', 'memberStatusDescr' => 'Ενεργή', 'doyId' => '1190', 'doyDescr' => 'ΚΕΦΟΔΕ ΑΤΤΙΚΗΣ',
                 'businessName' => 'ΔΕΙΓΜΑ ΑΝΩΝΥΜΗ ΕΤΑΙΡΕΙΑ', 'businessTitles' => ['ΔΕΙΓΜΑ ΑΕ'],
-                'branch' => [],
+                'street' => 'ΟΔΟΣ ΔΕΙΓΜΑ', 'streetNumber' => '1', 'tk' => '10000', 'city' => 'ΑΘΗΝΑ', 'region' => 'ΑΘΗΝΑ',
+                'email' => 'example@example.com', 'dateGemiRegistered' => '2017-05-16', 'dateIncorporated' => '2017-05-16',
+                'duration' => '20', 'expirationDate' => '2037-05-16',
+                'branch' => ['000000000001'],
                 'businessApplications' => [[
-                    'kak' => '000000', 'appSubjectId' => '1', 'appSubjectDescr' => 'ΔΕΙΓΜΑ',
+                    'kak' => '000000', 'appSubjectId' => '1', 'appSubjectDescr' => 'ΔΕΙΓΜΑ', 'appDate' => '2017-06-14',
                     'appDecisionStatusDescr' => 'ΚΑΤΑΧΩΡΙΣΗ', 'deletionSubject' => 'false',
+                    'url' => 'https://www.businessregistry.gr/downloadFile/index?key=assemblyDecision&elementId=000000',
                 ]],
-                'businessSubjects' => [[
-                    'professionId' => '00000', 'professionCode' => '00000000', 'professionDescr' => 'ΔΕΙΓΜΑ', 'startDate' => '2020-01-01',
-                ]],
-                'capital' => [],
+                'businessSubjects' => [
+                    ['professionId' => '00000', 'professionCode' => '62010000', 'professionDescr' => 'ΔΕΙΓΜΑ', 'startDate' => '2020-01-01'],
+                    ['professionId' => '00001', 'professionCode' => '62020000', 'professionDescr' => 'ΠΑΛΙΟ', 'startDate' => '2020-01-01', 'endDate' => '2021-01-01'],
+                ],
+                'capital' => ['capitalStock' => '5000', 'currency' => 'Euro', 'ecsokefalaiikes' => '25000'],
                 'stocks' => [['amount' => '2500', 'stockTypeId' => '1', 'stockType' => 'Ονομαστικές, Κοινές']],
             ]],
         ], 200, ['Content-Type' => 'application/json'])]);
 
-        $result = Gemi::basicInfo('010540663')['result'];
+        $company = Gemi::basicInfo('010540663');
 
-        $this->assertSame('ΔΕΙΓΜΑ ΑΝΩΝΥΜΗ ΕΤΑΙΡΕΙΑ', $result['company']['businessName']);
-        $this->assertSame(['ΔΕΙΓΜΑ ΑΕ'], $result['company']['businessTitles']);
-        $this->assertSame('ΔΕΙΓΜΑ', $result['company']['businessApplications'][0]['appSubjectDescr']);
-        $this->assertSame('Ονομαστικές, Κοινές', $result['company']['stocks'][0]['stockType']);
+        $this->assertSame('000000000000', $company->gemiNumber);
+        $this->assertSame('ΔΕΙΓΜΑ ΑΝΩΝΥΜΗ ΕΤΑΙΡΕΙΑ', $company->name);
+        $this->assertSame(['ΔΕΙΓΜΑ ΑΕ'], $company->titles);
+        $this->assertSame('ΑΕ', $company->legalTypeDescr);
+        $this->assertSame('Ενεργή', $company->statusDescr);
+        $this->assertSame('1190', $company->doy);
+        $this->assertSame('ΟΔΟΣ ΔΕΙΓΜΑ', $company->address->street);
+        $this->assertSame('1', $company->address->number);
+        $this->assertSame('10000', $company->address->zip);
+        $this->assertSame('ΑΘΗΝΑ', $company->address->area);
+        $this->assertSame('2017-05-16', $company->gemiRegisteredAt?->format('Y-m-d'));
+        $this->assertSame('2037-05-16', $company->expiresAt?->format('Y-m-d'));
+        $this->assertNull($company->branchType);
+        $this->assertFalse($company->isBranch());
+        $this->assertSame(['000000000001'], $company->branches);
+        $this->assertSame('ΔΕΙΓΜΑ', $company->applications[0]->subjectDescr);
+        $this->assertSame('2017-06-14', $company->applications[0]->date?->format('Y-m-d'));
+        $this->assertFalse($company->applications[0]->isDeletion);
+        $this->assertFalse($company->isDeleted());
+        $this->assertCount(2, $company->activities);
+        $this->assertSame('62010000', $company->activities[0]->code);
+        $this->assertTrue($company->activities[0]->isActive());
+        $this->assertFalse($company->activities[1]->isActive());
+        $this->assertCount(1, $company->activeActivities());
+        $this->assertSame(5000.0, $company->capital?->amount);
+        $this->assertSame(25000.0, $company->capital?->nonCapitalContributions);
+        $this->assertNull($company->capital?->guaranteeContributions);
+        $this->assertSame('Ονομαστικές, Κοινές', $company->stocks[0]->type);
+        $this->assertSame(2500.0, $company->stocks[0]->amount);
+        $this->assertSame('000000', $company->raw['businessApplications'][0]['kak']);
+    }
+
+    public function test_basic_info_maps_a_deleted_branch_with_an_empty_capital(): void
+    {
+        Http::fake(['*' => Http::response([
+            'getBasicInfoV3OutputRecord' => ['company' => [
+                'arGemi' => '001963839001', 'afm' => '000000000', 'businessName' => '(ΔΙΑΓΡΑΦΗΚΕ) ΔΕΙΓΜΑ',
+                'memberStatusId' => '17', 'memberStatusDescr' => 'Διαγραφή',
+                'branchType' => ['branchTypeId' => '1', 'branchTypeDescr' => 'Υποκατάστημα Ελληνικής Επιχείρησης'],
+                'businessApplications' => [[
+                    'kak' => '813001', 'appSubjectId' => '36', 'appSubjectDescr' => 'Λύση και εκκαθάριση εταιρίας, διαγραφή από ΓΕΜΗ',
+                    'deletionSubject' => 'true',
+                ]],
+                'businessSubjects' => [],
+                'capital' => [],
+                'stocks' => [],
+            ]],
+        ], 200, ['Content-Type' => 'application/json'])]);
+
+        $company = Gemi::basicInfo('010540663');
+
+        $this->assertSame(BranchType::GreekCompany, $company->branchType);
+        $this->assertTrue($company->isBranch());
+        $this->assertTrue($company->isDeleted());
+        $this->assertNull($company->capital);
+        $this->assertSame([], $company->stocks);
+        $this->assertSame([], $company->titles);
     }
 
     public function test_balance_sheets_sends_afm_and_gemi_number(): void
@@ -284,31 +412,56 @@ class GemiTest extends TestCase
             'companyBalanceSheetsOutputRecord' => ['companyBalancesheets' => [['year' => '2023']]],
         ], 200, ['Content-Type' => 'application/json'])]);
 
-        $result = Gemi::balanceSheets('010540663', '123456789012');
+        $sheets = Gemi::balanceSheets('010540663', '123456789012');
 
-        $this->assertSame('2023', $result['result']['companyBalancesheets'][0]['year']);
+        $this->assertCount(1, $sheets);
+        $this->assertSame('2023', $sheets[0]->year);
+        $this->assertNotNull($sheets[0]->auditRecord);
 
         Http::assertSent(fn (ClientRequest $r) => $r->data()['companyBalanceSheetsInputRecord']['afm'] === '010540663'
             && $r->data()['companyBalanceSheetsInputRecord']['id'] === '123456789012');
     }
 
-    public function test_balance_sheets_returns_both_the_empty_and_populated_year_shapes(): void
+    public function test_balance_sheets_maps_both_the_empty_and_populated_year_shapes(): void
     {
         Http::fake(['*' => Http::response([
             'companyBalanceSheetsOutputRecord' => ['companyBalancesheets' => [
-                ['year' => '2011', 'files' => []],
+                ['year' => 'Από 1/1 έως 31/12', 'isXbrl' => false, 'files' => []],
                 [
-                    'year' => '2019', 'netTurnover' => '0.00', 'totalAssets' => '0.00', 'numStuff' => '3', 'isXbrl' => false,
+                    'year' => '2019', 'netTurnover' => '12345', 'totalAssets' => '0.00', 'numStuff' => '3',
+                    'accountsReceivable' => '9696', 'preTaxResults' => '-11788', 'isXbrl' => true,
+                    'ixbrlUrl' => 'https://example.test/ixbrlview.html',
                     'files' => [['fileId' => '000000', 'arGemi' => '123456789012', 'type' => 'balancesheet']],
                 ],
             ]],
         ], 200, ['Content-Type' => 'application/json'])]);
 
-        $result = Gemi::balanceSheets('010540663', '123456789012')['result'];
+        $sheets = Gemi::balanceSheets('010540663', '123456789012');
 
-        $this->assertSame([], $result['companyBalancesheets'][0]['files']);
-        $this->assertSame('3', $result['companyBalancesheets'][1]['numStuff']);
-        $this->assertSame('balancesheet', $result['companyBalancesheets'][1]['files'][0]['type']);
+        $this->assertSame('Από 1/1 έως 31/12', $sheets[0]->year);
+        $this->assertFalse($sheets[0]->hasFiles());
+        $this->assertNull($sheets[0]->netTurnover);
+        $this->assertFalse($sheets[0]->isXbrl);
+        $this->assertSame(3.0, $sheets[1]->averageEmployees);
+        $this->assertSame(12345.0, $sheets[1]->netTurnover);
+        $this->assertSame(0.0, $sheets[1]->totalAssets);
+        $this->assertSame(-11788.0, $sheets[1]->preTaxResults);
+        $this->assertNull($sheets[1]->inventories);
+        $this->assertTrue($sheets[1]->isXbrl);
+        $this->assertSame('https://example.test/ixbrlview.html', $sheets[1]->ixbrlUrl);
+        $this->assertTrue($sheets[1]->hasFiles());
+        $this->assertSame('000000', $sheets[1]->files[0]->id);
+        $this->assertSame('balancesheet', $sheets[1]->files[0]->type);
+        $this->assertSame('3', $sheets[1]->raw['numStuff']);
+    }
+
+    public function test_balance_sheets_is_an_empty_list_when_nothing_is_filed(): void
+    {
+        Http::fake(['*' => Http::response([
+            'companyBalanceSheetsOutputRecord' => ['companyBalancesheets' => []],
+        ], 200, ['Content-Type' => 'application/json'])]);
+
+        $this->assertSame([], Gemi::balanceSheets('010540663', '123456789012'));
     }
 
     public function test_empty_credentials_are_rejected_before_any_http_call_or_audit_write(): void

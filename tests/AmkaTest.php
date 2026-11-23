@@ -2,7 +2,9 @@
 
 namespace Sonole\GovGr\Tests;
 
+use Sonole\GovGr\Amka\Data\IdType;
 use Sonole\GovGr\Amka\Facades\Amka;
+use Sonole\GovGr\Core\Enums\Gender;
 use Sonole\GovGr\Core\Enums\GovService;
 use Sonole\GovGr\Core\Exceptions\GovAuthenticationException;
 use Sonole\GovGr\Core\Exceptions\GovServiceException;
@@ -20,6 +22,8 @@ class AmkaTest extends TestCase
             <ns2:amka2dataResponse xmlns:ns2="http://gsis.ggps.interoperability/AmkaInfoInterface">
               <amka2dataOutputRecord>
                 <amkaInput>12345678901</amkaInput>
+                <idSurnameEl>ΔΕΙΓΜΑ</idSurnameEl>
+                <firstNameEl>ΔΕΙΓΜΑ</firstNameEl>
               </amka2dataOutputRecord>
               <callSequenceId>1</callSequenceId>
               <callSequenceDate>2020-05-08T08:14:56.160+03:00</callSequenceDate>
@@ -458,7 +462,7 @@ class AmkaTest extends TestCase
     {
         config(['govgr.amka.info.pilot.password' => 'p&ss<word>"\'']);
 
-        Http::fakeSequence()->push(self::SUCCESS_XML, 200, ['Content-Type' => 'text/xml']);
+        Http::fakeSequence()->push(self::DATA2AMKA_XML, 200, ['Content-Type' => 'text/xml']);
 
         Amka::data2amka(surname: 'O\'Brien & Sons', firstName: 'A<B>C', afm: '123456789');
 
@@ -534,50 +538,71 @@ class AmkaTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_amka2data_returns_the_full_record_shape(): void
+    public function test_amka2data_returns_a_person_with_the_full_record_on_raw(): void
     {
         Http::fake(['*' => Http::response(self::AMKA2DATA_FULL_XML, 200, ['Content-Type' => 'text/xml'])]);
 
-        $result = Amka::amka2data('01234567890')['result'];
+        $person = Amka::amka2data('01234567890');
 
-        $this->assertSame('01/01/1990', $result['amka2dataOutputRecord']['birthDate']);
-        $this->assertSame('ΑΘΗΝΑ', $result['amka2dataOutputRecord']['addressCity']);
-        $this->assertSame('2100000000', $result['amka2dataOutputRecord']['phone1']);
-        $this->assertSame([], $result['amka2dataOutputRecord']['deathIndication']);
-        $this->assertSame('1', $result['callSequenceId']);
+        $this->assertSame('01/01/1990', $person->raw['birthDate']);
+        $this->assertSame('1990-01-01', $person->birthDate?->format('Y-m-d'));
+        $this->assertSame('ΑΘΗΝΑ', $person->raw['addressCity']);
+        $this->assertSame('ΑΘΗΝΑ', $person->address->area);
+        $this->assertSame('2100000000', $person->phone);
+        $this->assertSame([], $person->raw['deathIndication']);
+        $this->assertSame(Gender::Male, $person->gender);
+        $this->assertSame(IdType::GreekPoliceIdCard, $person->idType);
+        $this->assertSame('amka_info', $person->auditRecord['service']->value ?? 'amka_info');
+        $this->assertNotNull($person->auditRecord);
     }
 
-    public function test_data2amka_returns_the_full_record_shape(): void
+    public function test_data2amka_returns_a_person_with_the_current_amka(): void
     {
         Http::fake(['*' => Http::response(self::DATA2AMKA_XML, 200, ['Content-Type' => 'text/xml'])]);
 
-        $result = Amka::data2amka(surname: 'ΠΑΠΑΔΟΠΟΥΛΟΣ', firstName: 'ΓΙΑΝΝΗΣ', birthDate: '01/01/1990')['result'];
+        $person = Amka::data2amka(surname: 'ΠΑΠΑΔΟΠΟΥΛΟΣ', firstName: 'ΓΙΑΝΝΗΣ', birthDate: '01/01/1990');
 
-        $this->assertSame('ΠΑΠΑΔΟΠΟΥΛΟΣ', $result['data2amkaOutputRecord']['surnameInput']);
-        $this->assertSame('01234567890', $result['data2amkaOutputRecord']['amkaCurrent']);
-        $this->assertSame([], $result['data2amkaOutputRecord']['motherNameInput']);
+        $this->assertSame('01234567890', $person->amka);
+        $this->assertSame('ΠΑΠΑΔΟΠΟΥΛΟΣ', $person->surname);
+        $this->assertNull($person->gender);
+        $this->assertSame('ΠΑΠΑΔΟΠΟΥΛΟΣ', $person->raw['surnameInput']);
+        $this->assertSame([], $person->raw['motherNameInput']);
     }
 
-    public function test_confirm_rel_amka_returns_the_confirmation_and_info(): void
+    public function test_confirm_rel_amka_returns_a_confirmation_with_the_raw_record(): void
     {
         Http::fake(['*' => Http::response(self::CONFIRM_REL_AMKA_XML, 200, ['Content-Type' => 'text/xml'])]);
 
-        $result = Amka::confirmRelAmka(relAmka: '123', parentAmka: '456')['result'];
+        $confirmation = Amka::confirmRelAmka(relAmka: '123', parentAmka: '456');
 
-        $this->assertSame('true', $result['confirmRelAmkaOutputRecord']['confirmation']);
-        $this->assertSame('ΤΕΚΝΟ', $result['confirmRelAmkaOutputRecord']['info']);
+        $this->assertTrue($confirmation->confirmed);
+        $this->assertSame('123', $confirmation->relAmka);
+        $this->assertSame('ΤΕΚΝΟ', $confirmation->info);
+        $this->assertSame('true', $confirmation->raw['confirmation']);
+        $this->assertNotNull($confirmation->auditRecord);
     }
 
-    public function test_confirm_rel_amka_multiple_returns_a_list_for_multiple_items(): void
+    public function test_confirm_rel_amka_multiple_returns_one_confirmation_per_item(): void
     {
         Http::fake(['*' => Http::response(self::MULTIPLE_TWO_ITEMS_XML, 200, ['Content-Type' => 'text/xml'])]);
 
-        $result = Amka::confirmRelAmkaMultiple(['01234567890', '09876543210'], parentAmka: '456')['result'];
-        $items = $result['confirmRelAmkaMultipleOutputRecord']['confirmList']['item'];
+        $items = Amka::confirmRelAmkaMultiple(['01234567890', '09876543210'], parentAmka: '456');
 
         $this->assertCount(2, $items);
-        $this->assertSame('01234567890', $items[0]['relAmka']);
-        $this->assertSame('09876543210', $items[1]['relAmka']);
+        $this->assertSame('01234567890', $items[0]->relAmka);
+        $this->assertSame('09876543210', $items[1]->relAmka);
+        $this->assertTrue($items[1]->confirmed);
+        $this->assertSame($items[0]->auditRecord, $items[1]->auditRecord);
+    }
+
+    public function test_confirm_rel_amka_multiple_with_a_single_item_is_still_a_list(): void
+    {
+        Http::fake(['*' => Http::response(self::MULTIPLE_SINGLE_ITEM_XML, 200, ['Content-Type' => 'text/xml'])]);
+
+        $items = Amka::confirmRelAmkaMultiple(['123'], parentAmka: '456');
+
+        $this->assertCount(1, $items);
+        $this->assertSame('123', $items[0]->relAmka);
     }
 
     public function test_confirm_rel_amka_multiple_rejects_an_empty_rel_amkas_list(): void

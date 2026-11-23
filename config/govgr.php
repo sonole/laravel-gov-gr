@@ -2,6 +2,15 @@
 
 return [
 
+    // true replaces the Amka and TaxRegistry services with fakes that never call the network (see Amka::fake()
+    // and TaxRegistry::fake()), e.g. for local development. Refused in production.
+    'fake' => env('GOVGR_FAKE', false),
+
+    // true checks AFM and AMKA arguments (checksum included) before a call and throws InvalidArgumentException,
+    // so a typo never costs a ΚΕΔ request and an audit row. Turn it off if your test environment uses dummy
+    // numbers that the service accepts but the checksum does not.
+    'validate_input' => env('GOVGR_VALIDATE_INPUT', true),
+
     'audit' => [
         // Table the audit rows are stored in (and the migration creates).
         // Change it if your app already has its own audit_records table.

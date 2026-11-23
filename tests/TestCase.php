@@ -68,6 +68,9 @@ abstract class TestCase extends Orchestra
             'prefix' => '',
         ]);
 
+        // Most fixtures use dummy AFM / AMKA numbers; ValidationTest turns the checksum check on.
+        $app['config']->set('govgr.validate_input', false);
+
         $app['config']->set('govgr.audit.unit', 'TEST');
         $app['config']->set('govgr.audit.system_user_email', self::SYSTEM_USER_EMAIL);
         $app['config']->set('govgr.audit.system_ip', '198.51.100.1');

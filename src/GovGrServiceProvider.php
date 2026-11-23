@@ -21,6 +21,9 @@ use Sonole\GovGr\TaxisnetOAuth\TaxisnetOAuth;
 use Sonole\GovGr\TaxRegistry\TaxRegistry;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
+use RuntimeException;
+use Sonole\GovGr\Amka\Facades\Amka as AmkaFacade;
+use Sonole\GovGr\TaxRegistry\Facades\TaxRegistry as TaxRegistryFacade;
 
 class GovGrServiceProvider extends ServiceProvider
 {
@@ -59,6 +62,16 @@ class GovGrServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        if (config('govgr.fake')) {
+            if ($this->app->environment('production')) {
+                throw new RuntimeException('govgr.fake (GOVGR_FAKE) must not be enabled in production: it replaces the real services.');
+            }
+
+            TaxRegistryFacade::fake();
+            AmkaFacade::fake();
+        }
+
+        $this->loadTranslationsFrom(__DIR__ . '/../lang', 'govgr');
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
         $this->loadViewsFrom(__DIR__ . '/../resources/views', 'taxisnet-oauth');
 

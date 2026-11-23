@@ -2,6 +2,13 @@
 
 namespace Sonole\GovGr\TaxRegistry;
 
+use Sonole\GovGr\Core\Exceptions\GovApiException;
+use Sonole\GovGr\Core\Exceptions\GovUnavailableException;
+use Sonole\GovGr\Core\Support\Failures;
+use Sonole\GovGr\Rules\ValidAfm;
+use Sonole\GovGr\Core\Exceptions\GovDeactivatedException;
+use Sonole\GovGr\Core\Exceptions\GovNotFoundException;
+use Sonole\GovGr\TaxRegistry\Data\RegistryEntity;
 use Sonole\GovGr\TaxRegistry\Services\PublicLookupService;
 use Sonole\GovGr\TaxRegistry\Services\RegistryService;
 use Illuminate\Http\Request;
@@ -50,33 +57,13 @@ class TaxRegistry
     }
 
     /**
-     * retrieveInfoByAFM - registry record for $afm (natural person or firm): basic info plus a
-     * set of related-record arrays (activities, memberships, relations, branches, etc), each
-     * requestable via the corresponding *Request flag and empty when not requested/found.
+     * Looks up an AFM: a natural person or a legal entity (->kind). The whole raw record, including any optional
+     * groups asked for with the *Request flags, is on ->raw, and the audit_records row on ->auditRecord.
      *
-     * Example (field names shown, values are placeholders, not from a real call):
-     * ['result' => [
-     *     'basicInfo' => [
-     *         'afm' => '000000000', 'doy' => '0000', 'doyDescr' => 'ΔΕΙΓΜΑ ΔΟΥ',
-     *         'iNiFlag' => '1', 'deactivationFlag' => '1',
-     *         'onomasia' => 'ΠΑΠΑΔΟΠΟΥΛΟΣ,,ΓΙΑΝΝΗΣ,ΠΕΤΡΟΣ', 'mothersFirstName' => 'ΜΑΡΙΑ',
-     *         'birthDate' => '1990-01-01T00:00:00+02:00', 'indPhone' => '2100000000', 'cntResidenceDescr' => 'ΕΛΛΑΔΑ',
-     *         'residenceAddress' => 'ΟΔΟΣ ΔΕΙΓΜΑ', 'residenceAddressNo' => '1', 'residenceZipCode' => '10000',
-     *         'residenceParDescr' => 'ΔΕΙΓΜΑ',
-     *         'firmDoy' => '0000', 'firmAddress' => 'ΟΔΟΣ ΔΕΙΓΜΑ', 'firmAddressNo' => '1',
-     *         'firmZipCode' => '10000', 'firmParDescr' => 'ΔΕΙΓΜΑ', 'firmPhone' => '2100000000',
-     *     ],
-     *     'firmActivitiesArray' => [], 'membershipsArray' => [], 'relationsArray' => [], 'symmetoxesArray' => [],
-     *     'sysxetiseisArray' => [], 'branchArray' => [], 'branchActivitiesArray' => [],
-     *     'branchAbroadArray' => [], 'firmAbroad' => [],
-     * ]]
-     *
-     * onomasia is comma-joined as "surname,,firstName,fatherName" (for a natural person). Note the
-     * double comma where a middle field is unused. This is real, sensitive personal data - handle with care.
-     *
-     * @return array{result: array<string, mixed>, audit_record: array<string, mixed>}
-     *
-     * @throws Throwable
+     * @throws \InvalidArgumentException for an invalid AFM (checksum included), before anything is sent
+     * @throws GovNotFoundException for an AFM the registry does not know
+     * @throws GovDeactivatedException for a deactivated AFM
+     * @throws GovUnavailableException credentials, transport or a server error
      */
     public function retrieveInfoByAFM(
         string $afm,
@@ -89,11 +76,39 @@ class TaxRegistry
         ?string $branchAbroadRequest = null,
         ?string $firmAbroadRequest = null,
         ?Request $request = null,
-    ): array {
-        return $this->registry->retrieveInfoByAFM(
-            $afm, $firmActivitiesRequest, $membershipsRequest, $relationsRequest, $symmetoxesRequest,
-            $sysxetiseisRequest, $branchActivitiesRequest, $branchAbroadRequest, $firmAbroadRequest, $request,
-        );
+    ): RegistryEntity {
+        ValidAfm::ensure($afm);
+
+        try {
+            $response = $this->registry->retrieveInfoByAFM(
+                $afm, $firmActivitiesRequest, $membershipsRequest, $relationsRequest, $symmetoxesRequest,
+                $sysxetiseisRequest, $branchActivitiesRequest, $branchAbroadRequest, $firmAbroadRequest, $request,
+            );
+        } catch (Throwable $e) {
+            $e = Failures::sort($e);
+            $message = $e->getMessage();
+
+            throw match (true) {
+                ! $e instanceof GovApiException || $e instanceof GovUnavailableException => $e,
+                str_contains($message, 'απενεργοποιημένος') => GovDeactivatedException::wrapping($e),
+                str_contains($message, 'Ανύπαρκτος'), str_contains($message, 'δεν είναι έγκυρος') => GovNotFoundException::wrapping($e),
+                default => $e,
+            };
+        }
+
+        $record = (array) $response['result'];
+
+        if (($record['basicInfo'] ?? []) === []) {
+            throw new GovNotFoundException("No registry record for AFM [$afm].");
+        }
+
+        $entity = RegistryEntity::fromRecord($record, $response['audit_record']);
+
+        if (! $entity->isActive) {
+            throw new GovDeactivatedException("AFM [$afm] is deactivated.");
+        }
+
+        return $entity;
     }
 
     /**

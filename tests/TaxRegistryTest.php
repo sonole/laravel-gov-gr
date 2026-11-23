@@ -194,23 +194,26 @@ class TaxRegistryTest extends TestCase
 
         $result = TaxRegistry::retrieveInfoByAFM('123456789');
 
-        $this->assertSame('ΤΕΣΤ ΑΕ', $result['result']['basicInfo']['onomasia']);
+        $this->assertSame('ΤΕΣΤ ΑΕ', $result->name);
+        $this->assertSame('ΤΕΣΤ ΑΕ', $result->raw['basicInfo']['onomasia']);
 
         Http::assertSent(fn (ClientRequest $r) => str_contains($r->body(), '<afm>123456789</afm>')
             && str_contains($r->body(), '<auditUserId>system@example.com</auditUserId>'));
     }
 
-    public function test_retrieve_info_by_afm_returns_the_full_record_shape(): void
+    public function test_retrieve_info_by_afm_returns_an_entity_with_the_full_record_on_raw(): void
     {
         Http::fake(['*' => Http::response(self::AFM_FULL_RECORD_XML, 200, ['Content-Type' => 'text/xml'])]);
 
-        $result = TaxRegistry::retrieveInfoByAFM('123456789')['result'];
+        $entity = TaxRegistry::retrieveInfoByAFM('123456789');
+        $raw = $entity->raw;
 
-        $this->assertSame('ΠΑΠΑΔΟΠΟΥΛΟΣ,,ΓΙΑΝΝΗΣ,ΠΕΤΡΟΣ', $result['basicInfo']['onomasia']);
-        $this->assertSame('ΜΑΡΙΑ', $result['basicInfo']['mothersFirstName']);
-        $this->assertSame('ΟΔΟΣ ΔΕΙΓΜΑ', $result['basicInfo']['residenceAddress']);
-        $this->assertSame([], $result['firmActivitiesArray']);
-        $this->assertSame([], $result['branchAbroadArray']);
+        $this->assertSame('ΠΑΠΑΔΟΠΟΥΛΟΣ,,ΓΙΑΝΝΗΣ,ΠΕΤΡΟΣ', $raw['basicInfo']['onomasia']);
+        $this->assertSame('ΜΑΡΙΑ', $entity->mothersFirstName);
+        $this->assertSame('ΟΔΟΣ ΔΕΙΓΜΑ', $entity->residence->street);
+        $this->assertSame([], $raw['firmActivitiesArray']);
+        $this->assertSame([], $raw['branchAbroadArray']);
+        $this->assertNotNull($entity->auditRecord);
     }
 
     public function test_a_populated_registry_error_record_throws(): void

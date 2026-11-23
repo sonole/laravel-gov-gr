@@ -118,9 +118,15 @@ Gemi::balanceSheets($afm);
 ```php
 use Amka;
 
-Amka::confirmRelAmka($relAmka, parentAmka: $parentAmka);
-Amka::amka2data($amka);
-Amka::data2amka(surname: $surname, firstName: $firstName);
+$c = Amka::confirmRelAmka($relAmka, parentAmka: $parentAmka); // RelationshipConfirmation: ->confirmed, ->info, ->raw
+$all = Amka::confirmRelAmkaMultiple([$a, $b], parentAmka: $parentAmka); // a list of them, one per AMKA
+$person = Amka::amka2data($amka);   // AmkaPerson (->gender, ->idType, ->birthDate, ...)
+$person->raw;                        // the service's record as returned
+$person->auditRecord;                // the audit_records row of the call
+
+// The current AMKA of someone, from their details (an AmkaPerson without gender / ID type):
+$amka = Amka::data2amka(surname: $surname, firstName: $firstName, birthDate: '01/02/1990')->amka;
+// Both throw GovNotFoundException when nobody matches.
 ```
 
 ### Ergani
@@ -138,9 +144,55 @@ Ergani::employmentHistoryByPeriod($afm, $refdateFrom, $refdateTo);
 ```php
 use TaxRegistry;
 
-TaxRegistry::retrieveInfoByAFM($afm);
+$entity = TaxRegistry::retrieveInfoByAFM($afm); // RegistryEntity: ->kind is NaturalPerson or LegalEntity,
+                                                 // ->raw the whole record, ->auditRecord the audit row
+// throws GovNotFoundException (unknown/invalid AFM) or GovDeactivatedException
 TaxRegistry::lookupByAfm($afm); // the public RgWsPublic2 lookup, separate credentials
 ```
+
+### Errors and validation
+
+The calls that return an object (`amka2data`, `data2amka`, `confirmRelAmka`, `confirmRelAmkaMultiple`,
+`retrieveInfoByAFM`) end in one of three ways besides success, so callers only catch these:
+
+| Exception | Meaning |
+| --- | --- |
+| `GovNotFoundException` | the service answered and has nothing: unknown AFM / AMKA, nobody matches the details |
+| `GovDeactivatedException` | the AFM exists but is deactivated (`retrieveInfoByAFM` only) |
+| `GovUnavailableException` | no answer: transport failure, a 5xx, or bad credentials (`GovAuthenticationException`, a subtype) |
+
+AFM and AMKA arguments are checked, checksum included, **before** anything is sent, so a typo costs neither a ΚΕΔ
+request nor an audit row. A bad one throws `InvalidArgumentException`. Set `GOVGR_VALIDATE_INPUT=false` if your test
+environment uses dummy numbers that the service accepts but the checksum does not.
+
+The same checks are Laravel validation rules, so a form can reject a value before the call is ever made:
+
+```php
+use Sonole\GovGr\Rules\ValidAfm;
+use Sonole\GovGr\Rules\ValidAmka;
+
+$request->validate(['afm' => [new ValidAfm], 'amka' => [new ValidAmka]]); // en and el messages included
+ValidAfm::passes($afm); // or the plain boolean check
+```
+
+### Faking (local development and tests)
+
+`Amka::fake()` and `TaxRegistry::fake()` replace the service with one that never calls the network, needs no
+credentials and writes no `audit_records` row. The methods and the returned `AmkaPerson` / `RegistryEntity`
+stay the same, so the code under test doesn't change.
+
+```php
+TaxRegistry::fake();   // an AFM starting 09, 8 or 9 is a legal entity, any other a natural person built from the AFM
+Amka::fake();          // data2amka() builds a valid AMKA from the details, amka2data() derives the person from it
+
+// Override single answers: an entity / person, a record array, or an exception to throw.
+TaxRegistry::fake(['123456789' => new GovNotFoundException('Ανύπαρκτος Α.Φ.Μ.')]);
+Amka::fake(amka2data: ['01019000015' => $person], data2amka: ['000000001' => $person], confirmations: ['02029039233' => false]);
+```
+
+Set `GOVGR_FAKE=true` (config `govgr.fake`) to install both fakes at boot. It is refused in production. To fake
+only locally, point the config at your environment: `'fake' => env('GOVGR_FAKE', env('APP_ENV') === 'local')`. `confirmRelAmka()` confirms every relAmka as "ΤΕΚΝΟ" unless `confirmations` says otherwise. The other methods
+(`amka2dataE`, `lookupByAfm`, ...) are not faked and throw `BadMethodCallException`.
 
 ### BankConfirm
 

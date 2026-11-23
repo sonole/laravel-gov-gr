@@ -5,6 +5,7 @@ namespace Sonole\GovGr\Core\Exceptions;
 use Sonole\GovGr\Core\Enums\GovService;
 use Sonole\GovGr\Core\Http\Models\AuditRecord;
 
+/** @phpstan-consistent-constructor */
 class GovApiException extends \RuntimeException
 {
     private ?AuditRecord $auditRecord = null;
@@ -19,6 +20,18 @@ class GovApiException extends \RuntimeException
         $this->service = $service;
 
         return $this;
+    }
+
+    /** A copy of $previous as this exception type, with its service, audit record and HTTP status carried over. */
+    public static function wrapping(self $previous): static
+    {
+        $exception = new static($previous->getMessage(), 0, $previous);
+
+        if ($previous->service !== null) {
+            $exception->withService($previous->service);
+        }
+
+        return $exception->withAuditContext($previous->auditRecord)->withHttpStatus($previous->httpStatusCode);
     }
 
     public function service(): ?GovService

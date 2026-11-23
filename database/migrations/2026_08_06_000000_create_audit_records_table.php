@@ -8,7 +8,7 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('audit_records', function (Blueprint $table) {
+        Schema::create(config('govgr.audit.table', 'audit_records'), function (Blueprint $table) {
             $table->id();
             $table->dateTime('transaction_date');
             $table->string('protocol', 100)->nullable();
@@ -28,6 +28,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('audit_records');
+        Schema::dropIfExists(config('govgr.audit.table', 'audit_records'));
     }
 };

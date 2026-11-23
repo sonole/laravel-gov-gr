@@ -3,6 +3,11 @@
 return [
 
     'audit' => [
+        // Table the audit rows are stored in (and the migration creates).
+        // Change it if your app already has its own audit_records table.
+        // Set it BEFORE running "php artisan migrate".
+        'table' => env('GOVGR_AUDIT_TABLE', 'audit_records'),
+
         // Sent as the auditUnit field. The name of your organization/unit
         // as registered with the Interoperability Center (ΚΕΔ).
         'unit' => env('GOVGR_AUDIT_UNIT'),

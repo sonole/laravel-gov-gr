@@ -20,8 +20,10 @@ class AuditReportCommand extends Command
 
     public function handle(): int
     {
-        if (! Schema::hasTable((new AuditRecord)->getTable())) {
-            $this->error('The audit_records table does not exist. Run "php artisan migrate" to create it.');
+        $table = (new AuditRecord)->getTable();
+
+        if (! Schema::hasTable($table)) {
+            $this->error("The {$table} table does not exist. Run \"php artisan migrate\" to create it.");
 
             return self::FAILURE;
         }

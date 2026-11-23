@@ -30,6 +30,11 @@ class AuditRecord extends Model
 
     private static ?bool $tableExists = null;
 
+    public function getTable(): string
+    {
+        return config('govgr.audit.table', 'audit_records');
+    }
+
     /**
      * Creates a row for one physical call and stamps its own protocol
      * ("{id}/{d-m-Y}") from its own id, the format every audited call uses.
@@ -56,9 +61,11 @@ class AuditRecord extends Model
             return;
         }
 
-        if (! Schema::hasTable((new self)->getTable())) {
+        $table = (new self)->getTable();
+
+        if (! Schema::hasTable($table)) {
             throw new RuntimeException(
-                'The audit_records table does not exist. Run "php artisan migrate" to create it before using gov package services.'
+                "The {$table} table does not exist. Run \"php artisan migrate\" to create it before using gov package services."
             );
         }
 

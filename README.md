@@ -35,7 +35,9 @@ of a raw SQL error.
 ## Audit logging
 
 Every ΚΕΔ call (Gemi, Amka, Ergani, TaxRegistry, BankConfirm) writes one row to
-`audit_records` per physical API call, via the migration this package ships. Two things are
+`audit_records` per physical API call, via the migration this package ships. If your app already has an `audit_records` table of its
+own, set `GOVGR_AUDIT_TABLE=govgr_audit_records` (any name) in `.env` **before** running
+`php artisan migrate`; the migration, model and report command all follow it. Two things are
 required for any of these services to work:
 
 ```env
